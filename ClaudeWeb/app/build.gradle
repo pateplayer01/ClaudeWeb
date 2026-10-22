@@ -1,0 +1,54 @@
+plugins {
+    id 'com.android.application'
+}
+def buildNumber = (project.findProperty("buildNumber") ?: "0").toString().toInteger()
+
+android {
+    namespace 'com.example.claudeweb'
+    compileSdk 34
+    defaultConfig {
+        applicationId "com.example.claudeweb"
+        minSdk 24
+        targetSdk 34
+        versionCode 100 + buildNumber
+        versionName "1.9"
+        buildConfigField "int", "BUILD_NUMBER", "${buildNumber}"
+        buildConfigField "String", "REPO", "\"pateplayer01/ClaudeWeb\""
+    }
+    signingConfigs {
+        debug {
+            storeFile file('debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
+    buildFeatures {
+        buildConfig true
+    }
+    flavorDimensions "site"
+    productFlavors {
+        claude {
+            dimension "site"
+            applicationId "com.example.claudeweb"
+            resValue "string", "app_name", "Claude"
+            manifestPlaceholders = [linkHost: "claude.ai"]
+            buildConfigField "String", "APK_NAME", "\"ClaudeWeb.apk\""
+            buildConfigField "String", "HOME", "\"https://claude.ai/\""
+            buildConfigField "String", "HOSTS", "\"claude.ai,claude.com,anthropic.com,google.com,youtube.com,googleapis.com,gstatic.com,cloudflare.com\""
+        }
+        zai {
+            dimension "site"
+            applicationId "com.example.zaiweb"
+            resValue "string", "app_name", "GLM"
+            manifestPlaceholders = [linkHost: "chat.z.ai"]
+            buildConfigField "String", "APK_NAME", "\"ZaiWeb.apk\""
+            buildConfigField "String", "HOME", "\"https://chat.z.ai/\""
+            buildConfigField "String", "HOSTS", "\"z.ai,google.com,youtube.com,googleapis.com,gstatic.com,cloudflare.com\""
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
