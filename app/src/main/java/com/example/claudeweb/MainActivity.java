@@ -32,6 +32,7 @@ public class MainActivity extends Activity {
     private static final String HOME = BuildConfig.HOME;
     private static final String UA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
     private static final int FILE_REQ = 1;
+    private static final String HOOK = "(function(){if(window.__dlHook)return;window.__dlHook=1;window.__blobs={};var oc=URL.createObjectURL;URL.createObjectURL=function(b){var u=oc.call(URL,b);try{window.__blobs[u]=b;}catch(e){}return u;};var ac=HTMLAnchorElement.prototype.click;HTMLAnchorElement.prototype.click=function(){if(this.download)window.__lastName=this.download;return ac.apply(this,arguments);};document.addEventListener('click',function(e){var a=e.target&&e.target.closest?e.target.closest('a[download]'):null;if(a)window.__lastName=a.getAttribute('download');},true);})();";
 
     private FrameLayout root;
     private WebView web;
@@ -75,6 +76,16 @@ public class MainActivity extends Activity {
         w.setDownloadListener((url, ua, cd, mime, len) -> handleDownload(w, url, ua, cd, mime));
 
         w.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageStarted(WebView v, String url, android.graphics.Bitmap icon) {
+                v.evaluateJavascript(HOOK, null);
+            }
+
+            @Override
+            public void onPageFinished(WebView v, String url) {
+                v.evaluateJavascript(HOOK, null);
+            }
+
             @Override
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
                 String host = r.getUrl().getHost();
@@ -133,11 +144,14 @@ public class MainActivity extends Activity {
 
     private void handleDownload(WebView w, String url, String ua, String cd, String mime) {
         String name = URLUtil.guessFileName(url, cd, mime);
+        toast("Bắt đầu tải...");
         if (url.startsWith("blob:")) {
-            String js = "(function(){var x=new XMLHttpRequest();x.open('GET','" + esc(url)
-                    + "',true);x.responseType='blob';x.onload=function(){var r=new FileReader();"
-                    + "r.onloadend=function(){AndroidDl.save(r.result,'" + esc(mime) + "','" + esc(name)
-                    + "');};r.readAsDataURL(x.response);};x.send();})();";
+            String js = "(function(){var u='" + esc(url) + "';var name=window.__lastName||'" + esc(name) + "';window.__lastName=null;"
+                    + "function send(b){var r=new FileReader();r.onloadend=function(){AndroidDl.save(r.result,'" + esc(mime) + "',name);};"
+                    + "r.onerror=function(){AndroidDl.fail();};r.readAsDataURL(b);}"
+                    + "var b=window.__blobs&&window.__blobs[u];if(b){send(b);return;}"
+                    + "var x=new XMLHttpRequest();x.open('GET',u,true);x.responseType='blob';"
+                    + "x.onload=function(){send(x.response);};x.onerror=function(){AndroidDl.fail();};x.send();})();";
             w.evaluateJavascript(js, null);
             return;
         }
@@ -157,12 +171,18 @@ public class MainActivity extends Activity {
             req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name);
             ((DownloadManager) getSystemService(DOWNLOAD_SERVICE)).enqueue(req);
             toast("Đang tải: " + name);
+            if (w == popup) root.post(this::closePopup);
         } catch (Exception e) {
             toast("Tải xuống thất bại");
         }
     }
 
     private class DlBridge {
+        @JavascriptInterface
+        public void fail() {
+            toast("Không đọc được tệp");
+        }
+
         @JavascriptInterface
         public void save(String dataUrl, String mime, String name) {
             try {
