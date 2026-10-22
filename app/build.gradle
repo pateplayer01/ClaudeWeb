@@ -1,0 +1,38 @@
+plugins {
+    id 'com.android.application'
+}
+android {
+    namespace 'com.example.claudeweb'
+    compileSdk 34
+    defaultConfig {
+        applicationId "com.example.claudeweb"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+    buildFeatures {
+        buildConfig true
+    }
+    flavorDimensions "site"
+    productFlavors {
+        claude {
+            dimension "site"
+            applicationId "com.example.claudeweb"
+            resValue "string", "app_name", "Claude Web"
+            buildConfigField "String", "HOME", "\"https://claude.ai/\""
+            buildConfigField "String", "HOSTS", "\"claude.ai,anthropic.com,google.com,gstatic.com,cloudflare.com\""
+        }
+        zai {
+            dimension "site"
+            applicationId "com.example.zaiweb"
+            resValue "string", "app_name", "Z.ai Web"
+            buildConfigField "String", "HOME", "\"https://chat.z.ai/\""
+            buildConfigField "String", "HOSTS", "\"z.ai,google.com,gstatic.com,cloudflare.com\""
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
