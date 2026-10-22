@@ -37,6 +37,7 @@ public class MainActivity extends Activity {
     private FrameLayout root;
     private WebView web;
     private WebView popup;
+    private volatile boolean expectingBlob = false;
     private ValueCallback<Uri[]> filePathCallback;
 
     @Override
@@ -54,7 +55,28 @@ public class MainActivity extends Activity {
         if (savedInstanceState != null) {
             web.restoreState(savedInstanceState);
         } else {
-            web.loadUrl(HOME);
+            Uri d = getIntent().getData();
+            web.loadUrl(d != null && isAllowed(d) ? d.toString() : HOME);
+        }
+    }
+
+    private static boolean isAllowed(Uri u) {
+        if (!"https".equals(u.getScheme())) return false;
+        String host = u.getHost();
+        if (host == null) return false;
+        for (String h : BuildConfig.HOSTS.split(",")) {
+            if (host.equals(h) || host.endsWith("." + h)) return true;
+        }
+        return false;
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        Uri d = intent.getData();
+        if (d != null && isAllowed(d)) {
+            closePopup();
+            web.loadUrl(d.toString());
         }
     }
 
@@ -88,13 +110,47 @@ public class MainActivity extends Activity {
 
             @Override
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
-                String host = r.getUrl().getHost();
+                Uri u = r.getUrl();
+                String scheme = u.getScheme();
+                if (scheme == null || scheme.equals("about") || scheme.equals("blob")
+                        || scheme.equals("data") || scheme.equals("javascript")) {
+                    return false;
+                }
+                if (scheme.equals("intent")) {
+                    try {
+                        Intent it = Intent.parseUri(u.toString(), Intent.URI_INTENT_SCHEME);
+                        Uri target = it.getData();
+                        String fb = it.getStringExtra("browser_fallback_url");
+                        if (target != null && ("https".equals(target.getScheme()) || "http".equals(target.getScheme()))) {
+                            v.loadUrl(target.toString());
+                        } else if (fb != null) {
+                            v.loadUrl(fb);
+                        }
+                    } catch (Exception ignored) {
+                    }
+                    return true;
+                }
+                if (!scheme.equals("http") && !scheme.equals("https")) {
+                    toast("Mở ngoài: " + scheme);
+                    try {
+                        startActivity(new Intent(Intent.ACTION_VIEW, u));
+                    } catch (Exception ignored) {
+                    }
+                    return true;
+                }
+                String host = u.getHost();
                 if (host != null) {
                     for (String h : BuildConfig.HOSTS.split(",")) {
                         if (host.equals(h) || host.endsWith("." + h)) return false;
                     }
                 }
-                startActivity(new Intent(Intent.ACTION_VIEW, r.getUrl()));
+                // Chuyen huong tu dong (nhu buoc dang nhap Google) o lai trong ung dung.
+                if (!r.hasGesture() || r.isRedirect()) return false;
+                toast("Mở ngoài: " + host);
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW, u));
+                } catch (Exception ignored) {
+                }
                 return true;
             }
         });
@@ -152,11 +208,12 @@ public class MainActivity extends Activity {
                     + "var b=window.__blobs&&window.__blobs[u];if(b){send(b);return;}"
                     + "var x=new XMLHttpRequest();x.open('GET',u,true);x.responseType='blob';"
                     + "x.onload=function(){send(x.response);};x.onerror=function(){AndroidDl.fail();};x.send();})();";
+            expectingBlob = true;
             w.evaluateJavascript(js, null);
             return;
         }
         if (url.startsWith("data:")) {
-            new DlBridge().save(url, mime, name);
+            new DlBridge().saveInternal(url, mime, name);
             return;
         }
         if (!url.startsWith("http")) return;
@@ -180,11 +237,18 @@ public class MainActivity extends Activity {
     private class DlBridge {
         @JavascriptInterface
         public void fail() {
+            expectingBlob = false;
             toast("Không đọc được tệp");
         }
 
         @JavascriptInterface
         public void save(String dataUrl, String mime, String name) {
+            if (!expectingBlob) return;
+            expectingBlob = false;
+            saveInternal(dataUrl, mime, name);
+        }
+
+        void saveInternal(String dataUrl, String mime, String name) {
             try {
                 int comma = dataUrl.indexOf(',');
                 String header = dataUrl.substring(0, comma);
