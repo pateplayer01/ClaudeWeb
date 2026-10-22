@@ -3,6 +3,8 @@ on:
   workflow_dispatch:
   push:
     branches: [ main ]
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -16,11 +18,11 @@ jobs:
         with:
           gradle-version: 8.9
       - run: gradle assembleClaudeDebug assembleZaiDebug
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ClaudeWeb-apk
-          path: app/build/outputs/apk/claude/debug/app-claude-debug.apk
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ZaiWeb-apk
-          path: app/build/outputs/apk/zai/debug/app-zai-debug.apk
+      - name: Rename APKs
+        run: |
+          cp app/build/outputs/apk/claude/debug/app-claude-debug.apk ClaudeWeb.apk
+          cp app/build/outputs/apk/zai/debug/app-zai-debug.apk ZaiWeb.apk
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "v${{ github.run_number }}" ClaudeWeb.apk ZaiWeb.apk --title "Build ${{ github.run_number }}" --notes "Automatic build" --latest
