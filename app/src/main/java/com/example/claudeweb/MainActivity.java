@@ -1,12 +1,20 @@
 package com.example.claudeweb;
 
 import android.app.Activity;
+import android.app.DownloadManager;
+import android.content.ContentValues;
 import android.content.Intent;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Message;
+import android.provider.MediaStore;
+import android.util.Base64;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
+import android.webkit.JavascriptInterface;
+import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
@@ -14,6 +22,11 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
+import android.widget.Toast;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.OutputStream;
 
 public class MainActivity extends Activity {
     private static final String HOME = BuildConfig.HOME;
@@ -57,6 +70,9 @@ public class MainActivity extends Activity {
         CookieManager cm = CookieManager.getInstance();
         cm.setAcceptCookie(true);
         cm.setAcceptThirdPartyCookies(w, true);
+
+        w.addJavascriptInterface(new DlBridge(), "AndroidDl");
+        w.setDownloadListener((url, ua, cd, mime, len) -> handleDownload(w, url, ua, cd, mime));
 
         w.setWebViewClient(new WebViewClient() {
             @Override
@@ -104,6 +120,83 @@ public class MainActivity extends Activity {
                 if (v == popup) closePopup();
             }
         });
+    }
+
+    private static String esc(String v) {
+        if (v == null) return "";
+        return v.replace("\\", "\\\\").replace("'", "\\'");
+    }
+
+    private void toast(final String msg) {
+        runOnUiThread(() -> Toast.makeText(MainActivity.this, msg, Toast.LENGTH_SHORT).show());
+    }
+
+    private void handleDownload(WebView w, String url, String ua, String cd, String mime) {
+        String name = URLUtil.guessFileName(url, cd, mime);
+        if (url.startsWith("blob:")) {
+            String js = "(function(){var x=new XMLHttpRequest();x.open('GET','" + esc(url)
+                    + "',true);x.responseType='blob';x.onload=function(){var r=new FileReader();"
+                    + "r.onloadend=function(){AndroidDl.save(r.result,'" + esc(mime) + "','" + esc(name)
+                    + "');};r.readAsDataURL(x.response);};x.send();})();";
+            w.evaluateJavascript(js, null);
+            return;
+        }
+        if (url.startsWith("data:")) {
+            new DlBridge().save(url, mime, name);
+            return;
+        }
+        if (!url.startsWith("http")) return;
+        try {
+            DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
+            if (mime != null && !mime.isEmpty()) req.setMimeType(mime);
+            String cookie = CookieManager.getInstance().getCookie(url);
+            if (cookie != null) req.addRequestHeader("Cookie", cookie);
+            if (ua != null) req.addRequestHeader("User-Agent", ua);
+            req.setTitle(name);
+            req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name);
+            ((DownloadManager) getSystemService(DOWNLOAD_SERVICE)).enqueue(req);
+            toast("Đang tải: " + name);
+        } catch (Exception e) {
+            toast("Tải xuống thất bại");
+        }
+    }
+
+    private class DlBridge {
+        @JavascriptInterface
+        public void save(String dataUrl, String mime, String name) {
+            try {
+                int comma = dataUrl.indexOf(',');
+                String header = dataUrl.substring(0, comma);
+                byte[] bytes = Base64.decode(dataUrl.substring(comma + 1), Base64.DEFAULT);
+                String type = mime;
+                if (header.startsWith("data:") && header.contains(";")) {
+                    String t = header.substring(5, header.indexOf(';'));
+                    if (!t.isEmpty()) type = t;
+                }
+                if (type == null || type.isEmpty()) type = "application/octet-stream";
+
+                if (Build.VERSION.SDK_INT >= 29) {
+                    ContentValues v = new ContentValues();
+                    v.put(MediaStore.Downloads.DISPLAY_NAME, name);
+                    v.put(MediaStore.Downloads.MIME_TYPE, type);
+                    v.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                    Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+                    OutputStream os = getContentResolver().openOutputStream(uri);
+                    os.write(bytes);
+                    os.close();
+                } else {
+                    File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                    dir.mkdirs();
+                    FileOutputStream os = new FileOutputStream(new File(dir, name));
+                    os.write(bytes);
+                    os.close();
+                }
+                toast("Đã lưu vào Downloads: " + name);
+            } catch (Exception e) {
+                toast("Lưu tệp thất bại");
+            }
+        }
     }
 
     private void closePopup() {
