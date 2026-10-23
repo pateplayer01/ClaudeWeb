@@ -112,11 +112,15 @@ public class MainActivity extends Activity {
             + "try{new MutationObserver(sched).observe(document.documentElement,{childList:true,subtree:true});}catch(e){}"
             + "})();";
 
-    private static final String BARS = "(function(){if(window.__bgObs)return;window.__bgObs=1;" + "\n"
-            + "function bg(el){while(el){var c=getComputedStyle(el).backgroundColor;var m=c.match(/[\\d.]+/g);if(m&&(m.length<4||parseFloat(m[3])>0.5))return c;el=el.parentElement;}return 'rgb(255,255,255)';}" + "\n"
-            + "function at(y){var e=document.elementFromPoint(innerWidth/2,y);return bg(e||document.body);}" + "\n"
+    private static final String BARS = "(function(){if(window.__bgObs2)return;window.__bgObs2=1;" + "\n"
+            + "var cv=document.createElement('canvas');cv.width=cv.height=1;" + "\n"
+            + "var cx=cv.getContext('2d',{willReadFrequently:true});" + "\n"
+            + "function px(c){try{cx.clearRect(0,0,1,1);cx.fillStyle='#010203';cx.fillStyle=c;if(cx.fillStyle==='#010203')return null;cx.fillRect(0,0,1,1);return cx.getImageData(0,0,1,1).data;}catch(e){return null;}}" + "\n"
+            + "function bg(el){while(el){var d=px(getComputedStyle(el).backgroundColor);if(d&&d[3]>128)return 'rgb('+d[0]+','+d[1]+','+d[2]+')';el=el.parentElement;}return null;}" + "\n"
+            + "function at(x,y){var e=document.elementFromPoint(x,y);return bg(e||document.body);}" + "\n"
+            + "function edge(y){return at(3,y)||at(innerWidth-3,y)||at(innerWidth/2,y)||'rgb(255,255,255)';}" + "\n"
             + "var tm=null,last='';" + "\n"
-            + "function run(){try{var t=at(2),b=at(innerHeight-2),k=t+'|'+b;if(k!==last){last=k;AndroidDl.bars(t,b);}}catch(e){}}" + "\n"
+            + "function run(){try{var t=edge(2),b=edge(innerHeight-3),k=t+'|'+b;if(k!==last){last=k;AndroidDl.bars(t,b);}}catch(e){}}" + "\n"
             + "function sched(){if(tm)return;tm=setTimeout(function(){tm=null;run();},400);}" + "\n"
             + "run();setTimeout(run,1200);" + "\n"
             + "try{new MutationObserver(sched).observe(document.documentElement,{attributes:true,attributeFilter:['class','style','data-theme','data-mode']});}catch(e){}" + "\n"
@@ -533,7 +537,9 @@ public class MainActivity extends Activity {
                 if (filePathCallback != null) filePathCallback.onReceiveValue(null);
                 filePathCallback = cb;
                 try {
-                    startActivityForResult(p.createIntent(), FILE_REQ);
+                    Intent fi = p.createIntent();
+                    fi.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true); // chon nhieu tep mot lan
+                    startActivityForResult(fi, FILE_REQ);
                 } catch (Exception e) {
                     filePathCallback = null;
                     return false;

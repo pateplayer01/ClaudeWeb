@@ -11,7 +11,7 @@ android {
         minSdk 24
         targetSdk 34
         versionCode 100 + buildNumber
-        versionName "1.15"
+        versionName "1.16"
         buildConfigField "int", "BUILD_NUMBER", "${buildNumber}"
         buildConfigField "String", "REPO", "\"pateplayer01/ClaudeWeb\""
     }
