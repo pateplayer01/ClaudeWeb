@@ -750,8 +750,27 @@ public class MainActivity extends Activity {
             return;
         }
         if (!url.startsWith("http")) return;
+        lastUa = ua; lastMime = mime; lastCd = cd; lastFromPopup = (w == popup);
+        // Tai ngay trong trang (cookie + tieu de nhu trinh duyet that) de tranh bi chan 403.
+        String js = "(async function(){var u='" + esc(url) + "';var started=false;try{"
+                + "var r=await fetch(u,{credentials:'include'});if(!r.ok){AndroidDl.fallback(u);return;}"
+                + "var cd=r.headers.get('content-disposition')||'';var ty=(r.headers.get('content-type')||'').split(';')[0];"
+                + "if(!AndroidDl.beginHttp(u,cd,ty))return;started=true;var rd=r.body.getReader();"
+                + "for(;;){var x=await rd.read();if(x.done)break;var v=x.value;"
+                + "for(var o=0;o<v.length;o+=786432){var p=v.subarray(o,o+786432);var s='';"
+                + "for(var i=0;i<p.length;i+=32768){s+=String.fromCharCode.apply(null,p.subarray(i,i+32768));}"
+                + "if(!AndroidDl.chunk(btoa(s)))return;}}"
+                + "AndroidDl.end();}catch(e){if(started)AndroidDl.fail();else AndroidDl.fallback(u);}})();";
+        expectingBlob = true;
+        w.evaluateJavascript(js, null);
+    }
+
+    private String lastUa, lastMime, lastCd;
+    private boolean lastFromPopup;
+
+    // Du phong: DownloadManager voi ten/MIME da giai quyet.
+    private void downloadHttpFallback(final String url, final String ua, String cd, final String mime, final boolean fromPopup) {
         final String name = resolveName(url, cd, mime);
-        final boolean fromPopup = (w == popup);
         // Ten khong co duoi: doc tieu de that cua phan hoi de lay ten dung.
         if (extOf(name).isEmpty() || name.toLowerCase().endsWith(".bin")) {
             new Thread(() -> {
@@ -805,6 +824,28 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public boolean beginHttp(String url, String cd, String type) {
+            if (!expectingBlob) return false;
+            expectingBlob = false;
+            try {
+                String t = isGenericMime(type) ? lastMime : type;
+                blobName = resolveName(url, cd, t);
+                blobSink = new Sink(blobName, resolveMime(blobName, t));
+                toast("Đang tải: " + blobName);
+                return true;
+            } catch (Exception e) {
+                toast("Lưu tệp thất bại");
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public void fallback(String url) {
+            expectingBlob = false;
+            downloadHttpFallback(url, lastUa, lastCd, lastMime, lastFromPopup);
+        }
+
+        @JavascriptInterface
         public boolean chunk(String b64) {
             if (blobSink == null) return false;
             try {
@@ -824,6 +865,7 @@ public class MainActivity extends Activity {
             try {
                 blobSink.finish();
                 toast("Đã lưu vào Downloads: " + blobName);
+                if (popup != null) root.post(MainActivity.this::closePopup);
             } catch (Exception e) {
                 blobSink.abort();
                 toast("Lưu tệp thất bại");
