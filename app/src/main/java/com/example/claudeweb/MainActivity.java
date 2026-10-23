@@ -3,10 +3,14 @@ package com.example.claudeweb;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.DownloadManager;
+import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ContentValues;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
@@ -24,6 +28,7 @@ import android.view.ViewGroup;
 import android.view.inputmethod.InputMethodManager;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
+import android.webkit.MimeTypeMap;
 import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -43,12 +48,16 @@ import org.json.JSONObject;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
     private static final String HOME = BuildConfig.HOME;
@@ -503,54 +512,323 @@ public class MainActivity extends Activity {
         runOnUiThread(() -> Toast.makeText(MainActivity.this, msg, Toast.LENGTH_SHORT).show());
     }
 
-    private void handleDownload(WebView w, String url, String ua, String cd, String mime) {
-        String name = URLUtil.guessFileName(url, cd, mime);
-        toast("Bắt đầu tải...");
-        if (url.startsWith("blob:")) {
-            String js = "(function(){var u='" + esc(url) + "';var name=window.__lastName||'" + esc(name) + "';window.__lastName=null;"
-                    + "function send(b){var r=new FileReader();r.onloadend=function(){AndroidDl.save(r.result,'" + esc(mime) + "',name);};"
-                    + "r.onerror=function(){AndroidDl.fail();};r.readAsDataURL(b);}"
-                    + "var b=window.__blobs&&window.__blobs[u];if(b){delete window.__blobs[u];send(b);return;}"
-                    + "var x=new XMLHttpRequest();x.open('GET',u,true);x.responseType='blob';"
-                    + "x.onload=function(){send(x.response);};x.onerror=function(){AndroidDl.fail();};x.send();})();";
-            expectingBlob = true;
-            w.evaluateJavascript(js, null);
-            return;
-        }
-        if (url.startsWith("data:")) {
-            new DlBridge().saveInternal(url, mime, name);
-            return;
-        }
-        if (!url.startsWith("http")) return;
+    // ---------- Tai xuong ----------
+    private final HashMap<Long, String[]> dmJobs = new HashMap<>();
+    private boolean dmReceiverOn = false;
+    private boolean askedNotif = false;
+
+    private static String fileNameFromCd(String cd) {
+        if (cd == null) return null;
         try {
-            DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
-            if (mime != null && !mime.isEmpty()) req.setMimeType(mime);
+            Matcher m = Pattern.compile("filename\\*\\s*=\\s*[^']*'[^']*'([^;]+)", Pattern.CASE_INSENSITIVE).matcher(cd);
+            if (m.find()) return Uri.decode(m.group(1).trim().replace("\"", ""));
+            m = Pattern.compile("filename\\s*=\\s*\"?([^\";]+)\"?", Pattern.CASE_INSENSITIVE).matcher(cd);
+            if (m.find()) return m.group(1).trim();
+        } catch (Exception ignored) { }
+        return null;
+    }
+
+    private static String fileNameFromUrl(String url) {
+        if (url == null) return null;
+        try {
+            String p = Uri.parse(url).getLastPathSegment();
+            if (p != null && !p.isEmpty()) return p;
+        } catch (Exception ignored) { }
+        return null;
+    }
+
+    private static boolean isGenericMime(String m) {
+        return m == null || m.isEmpty() || m.equals("application/octet-stream")
+                || m.equals("binary/octet-stream") || m.equals("application/force-download");
+    }
+
+    private static String extOf(String name) {
+        int i = name.lastIndexOf('.');
+        return (i > 0 && i < name.length() - 1) ? name.substring(i + 1).toLowerCase() : "";
+    }
+
+    private static String fixName(String n, String mime) {
+        if (n == null) n = "";
+        n = n.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_").trim();
+        if (n.isEmpty()) n = "download";
+        if (extOf(n).isEmpty() && !isGenericMime(mime)) {
+            String ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime);
+            if (ext != null) n = n + "." + ext;
+        }
+        return n;
+    }
+
+    private static String resolveName(String url, String cd, String mime) {
+        String n = fileNameFromCd(cd);
+        if (n == null || n.isEmpty()) n = fileNameFromUrl(url);
+        String u = fileNameFromUrl(url);
+        if (n != null && n.toLowerCase().endsWith(".bin") && u != null
+                && !extOf(u).isEmpty() && !u.toLowerCase().endsWith(".bin")) n = u;
+        return fixName(n, mime);
+    }
+
+    // Loai MIME theo duoi tep. Tranh octet-stream: MediaStore se tu them ".bin".
+    private static String resolveMime(String name, String mime) {
+        if (!isGenericMime(mime)) return mime;
+        String t = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extOf(name));
+        if (t != null) return t;
+        if (extOf(name).equals("apk")) return "application/vnd.android.package-archive";
+        return "application/octet-stream";
+    }
+
+    private class Sink {
+        OutputStream os;
+        Uri uri;
+        File file;
+
+        Sink(String name, String mime) throws Exception {
+            if (Build.VERSION.SDK_INT >= 29) {
+                ContentValues v = new ContentValues();
+                v.put(MediaStore.Downloads.DISPLAY_NAME, name);
+                v.put(MediaStore.Downloads.MIME_TYPE, mime);
+                v.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                v.put(MediaStore.Downloads.IS_PENDING, 1);
+                uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+                os = getContentResolver().openOutputStream(uri);
+            } else {
+                File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                dir.mkdirs();
+                file = new File(dir, name);
+                int i = 1;
+                String base = name, ext = "";
+                int dot = name.lastIndexOf('.');
+                if (dot > 0) { base = name.substring(0, dot); ext = name.substring(dot); }
+                while (file.exists()) file = new File(dir, base + " (" + (i++) + ")" + ext);
+                os = new FileOutputStream(file);
+            }
+        }
+
+        void finish() throws Exception {
+            os.close();
+            if (uri != null) {
+                ContentValues v = new ContentValues();
+                v.put(MediaStore.Downloads.IS_PENDING, 0);
+                getContentResolver().update(uri, v, null, null);
+            }
+        }
+
+        void abort() {
+            try { os.close(); } catch (Exception ignored) { }
+            try {
+                if (uri != null) getContentResolver().delete(uri, null, null);
+                if (file != null) file.delete();
+            } catch (Exception ignored) { }
+        }
+    }
+
+    private void ensureDmReceiver() {
+        if (dmReceiverOn) return;
+        dmReceiverOn = true;
+        BroadcastReceiver r = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context c, Intent i) {
+                long id = i.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1);
+                String[] job = dmJobs.remove(id);
+                if (job == null) return;
+                DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+                Cursor cur = dm.query(new DownloadManager.Query().setFilterById(id));
+                int status = -1, reason = 0;
+                if (cur != null) {
+                    if (cur.moveToFirst()) {
+                        status = cur.getInt(cur.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS));
+                        reason = cur.getInt(cur.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON));
+                    }
+                    cur.close();
+                }
+                if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                    toast("Đã tải: " + job[3]);
+                } else {
+                    toast("Tải lỗi (mã " + reason + "), thử cách khác...");
+                    streamDownload(job[0], job[1], job[2], job[3], job[4]);
+                }
+            }
+        };
+        IntentFilter f = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(r, f, Context.RECEIVER_EXPORTED);
+        else registerReceiver(r, f);
+    }
+
+    // Tai truc tiep theo luong, ghi thang xuong dia (khong qua RAM). Dung khi DownloadManager loi.
+    private void streamDownload(final String url, final String cookieUnused, final String ua,
+                                final String name0, final String mime0) {
+        new Thread(() -> {
+            Sink sink = null;
+            try {
+                String cur = url;
+                HttpURLConnection c = null;
+                for (int hop = 0; hop < 8; hop++) {
+                    c = (HttpURLConnection) new URL(cur).openConnection();
+                    c.setInstanceFollowRedirects(false);
+                    c.setConnectTimeout(20000);
+                    c.setReadTimeout(60000);
+                    String ck = CookieManager.getInstance().getCookie(cur);
+                    if (ck != null) c.setRequestProperty("Cookie", ck);
+                    if (ua != null) c.setRequestProperty("User-Agent", ua);
+                    int code = c.getResponseCode();
+                    if (code >= 300 && code < 400 && c.getHeaderField("Location") != null) {
+                        cur = new URL(new URL(cur), c.getHeaderField("Location")).toString();
+                        c.disconnect();
+                        continue;
+                    }
+                    break;
+                }
+                if (c.getResponseCode() != 200) {
+                    toast("Tải thất bại (HTTP " + c.getResponseCode() + ")");
+                    return;
+                }
+                String name = name0;
+                String cdName = fileNameFromCd(c.getHeaderField("Content-Disposition"));
+                if (cdName != null && !cdName.isEmpty()) name = fixName(cdName, c.getContentType());
+                String mime = resolveMime(name, mime0 != null && !isGenericMime(mime0) ? mime0 : c.getContentType());
+                sink = new Sink(name, mime);
+                toast("Đang tải: " + name);
+                InputStream in = c.getInputStream();
+                byte[] buf = new byte[65536];
+                int n;
+                while ((n = in.read(buf)) > 0) sink.os.write(buf, 0, n);
+                in.close();
+                sink.finish();
+                toast("Đã lưu vào Downloads: " + name);
+            } catch (Exception e) {
+                if (sink != null) sink.abort();
+                toast("Tải thất bại");
+            }
+        }).start();
+    }
+
+    private void enqueueHttp(String url, String ua, String name, String mime, boolean fromPopup) {
+        try {
+            ensureDmReceiver();
             String cookie = CookieManager.getInstance().getCookie(url);
+            String m = resolveMime(name, mime);
+            DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
+            req.setMimeType(m);
             if (cookie != null) req.addRequestHeader("Cookie", cookie);
             if (ua != null) req.addRequestHeader("User-Agent", ua);
             req.setTitle(name);
             req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
             req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name);
-            ((DownloadManager) getSystemService(DOWNLOAD_SERVICE)).enqueue(req);
+            long id = ((DownloadManager) getSystemService(DOWNLOAD_SERVICE)).enqueue(req);
+            dmJobs.put(id, new String[]{url, cookie, ua, name, m});
             toast("Đang tải: " + name);
-            if (w == popup) root.post(this::closePopup);
         } catch (Exception e) {
-            toast("Tải xuống thất bại");
+            streamDownload(url, null, ua, name, mime);
         }
+        if (fromPopup) root.post(this::closePopup);
+    }
+
+    private void handleDownload(WebView w, String url, String ua, String cd, String mime) {
+        toast("Bắt đầu tải...");
+        if (Build.VERSION.SDK_INT >= 33 && !askedNotif
+                && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            askedNotif = true;
+            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 2);
+        }
+        if (url.startsWith("blob:")) {
+            String name = resolveName(null, cd, mime);
+            // Doc tung khoi 1 MB va gui sang Java, ghi thang xuong dia: tep lon khong het RAM.
+            String js = "(async function(){var u='" + esc(url) + "';var name=window.__lastName||'" + esc(name) + "';window.__lastName=null;"
+                    + "try{var b=window.__blobs&&window.__blobs[u];if(b){delete window.__blobs[u];}"
+                    + "else{var r=await fetch(u);b=await r.blob();}"
+                    + "if(!AndroidDl.begin(name,b.type||'" + esc(mime == null ? "" : mime) + "'))return;"
+                    + "var CH=1048576;for(var o=0;o<b.size;o+=CH){"
+                    + "var bytes=new Uint8Array(await b.slice(o,o+CH).arrayBuffer());var s='';"
+                    + "for(var i=0;i<bytes.length;i+=32768){s+=String.fromCharCode.apply(null,bytes.subarray(i,i+32768));}"
+                    + "if(!AndroidDl.chunk(btoa(s)))return;}"
+                    + "AndroidDl.end();}catch(e){AndroidDl.fail();}})();";
+            expectingBlob = true;
+            w.evaluateJavascript(js, null);
+            return;
+        }
+        if (url.startsWith("data:")) {
+            new DlBridge().saveInternal(url, mime, resolveName(null, cd, mime));
+            return;
+        }
+        if (!url.startsWith("http")) return;
+        final String name = resolveName(url, cd, mime);
+        final boolean fromPopup = (w == popup);
+        // Ten khong co duoi: doc tieu de that cua phan hoi de lay ten dung.
+        if (extOf(name).isEmpty() || name.toLowerCase().endsWith(".bin")) {
+            new Thread(() -> {
+                String n = name, m = mime;
+                try {
+                    HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+                    c.setConnectTimeout(15000);
+                    c.setReadTimeout(15000);
+                    String ck = CookieManager.getInstance().getCookie(url);
+                    if (ck != null) c.setRequestProperty("Cookie", ck);
+                    if (ua != null) c.setRequestProperty("User-Agent", ua);
+                    if (c.getResponseCode() == 200) {
+                        String cn = fileNameFromCd(c.getHeaderField("Content-Disposition"));
+                        if (isGenericMime(m)) m = c.getContentType();
+                        n = resolveName(c.getURL().toString(), c.getHeaderField("Content-Disposition"), m);
+                        if (cn == null && extOf(n).isEmpty()) n = name;
+                    }
+                    c.disconnect();
+                } catch (Exception ignored) { }
+                enqueueHttp(url, ua, n, m, fromPopup);
+            }).start();
+            return;
+        }
+        enqueueHttp(url, ua, name, mime, fromPopup);
     }
 
     private class DlBridge {
+        private Sink blobSink;
+        private String blobName;
+
         @JavascriptInterface
         public void fail() {
             expectingBlob = false;
+            if (blobSink != null) { blobSink.abort(); blobSink = null; }
             toast("Không đọc được tệp");
         }
 
         @JavascriptInterface
-        public void save(String dataUrl, String mime, String name) {
-            if (!expectingBlob) return;
+        public boolean begin(String name, String type) {
+            if (!expectingBlob) return false;
             expectingBlob = false;
-            saveInternal(dataUrl, mime, name);
+            try {
+                blobName = fixName(name, type);
+                blobSink = new Sink(blobName, resolveMime(blobName, type));
+                toast("Đang lưu: " + blobName);
+                return true;
+            } catch (Exception e) {
+                toast("Lưu tệp thất bại");
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public boolean chunk(String b64) {
+            if (blobSink == null) return false;
+            try {
+                blobSink.os.write(Base64.decode(b64, Base64.DEFAULT));
+                return true;
+            } catch (Exception e) {
+                blobSink.abort();
+                blobSink = null;
+                toast("Lưu tệp thất bại");
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public void end() {
+            if (blobSink == null) return;
+            try {
+                blobSink.finish();
+                toast("Đã lưu vào Downloads: " + blobName);
+            } catch (Exception e) {
+                blobSink.abort();
+                toast("Lưu tệp thất bại");
+            }
+            blobSink = null;
         }
 
         void saveInternal(String dataUrl, String mime, String name) {
@@ -563,24 +841,10 @@ public class MainActivity extends Activity {
                     String t = header.substring(5, header.indexOf(';'));
                     if (!t.isEmpty()) type = t;
                 }
-                if (type == null || type.isEmpty()) type = "application/octet-stream";
-
-                if (Build.VERSION.SDK_INT >= 29) {
-                    ContentValues v = new ContentValues();
-                    v.put(MediaStore.Downloads.DISPLAY_NAME, name);
-                    v.put(MediaStore.Downloads.MIME_TYPE, type);
-                    v.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
-                    Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
-                    OutputStream os = getContentResolver().openOutputStream(uri);
-                    os.write(bytes);
-                    os.close();
-                } else {
-                    File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-                    dir.mkdirs();
-                    FileOutputStream os = new FileOutputStream(new File(dir, name));
-                    os.write(bytes);
-                    os.close();
-                }
+                name = fixName(name, type);
+                Sink sk = new Sink(name, resolveMime(name, type));
+                sk.os.write(bytes);
+                sk.finish();
                 toast("Đã lưu vào Downloads: " + name);
             } catch (Exception e) {
                 toast("Lưu tệp thất bại");
