@@ -118,9 +118,9 @@ public class MainActivity extends Activity {
             + "function px(c){try{cx.clearRect(0,0,1,1);cx.fillStyle='#010203';cx.fillStyle=c;if(cx.fillStyle==='#010203')return null;cx.fillRect(0,0,1,1);return cx.getImageData(0,0,1,1).data;}catch(e){return null;}}" + "\n"
             + "function bg(el){while(el){var d=px(getComputedStyle(el).backgroundColor);if(d&&d[3]>128)return 'rgb('+d[0]+','+d[1]+','+d[2]+')';el=el.parentElement;}return null;}" + "\n"
             + "function at(x,y){var e=document.elementFromPoint(x,y);return bg(e||document.body);}" + "\n"
-            + "function edge(y){return at(3,y)||at(innerWidth-3,y)||at(innerWidth/2,y)||'rgb(255,255,255)';}" + "\n"
+            + "function edge(y){return at(3,y)||at(innerWidth-3,y)||at(innerWidth/2,y);}" + "\n"
             + "var tm=null,last='';" + "\n"
-            + "function run(){try{var t=edge(2),b=edge(innerHeight-3),k=t+'|'+b;if(k!==last){last=k;AndroidDl.bars(t,b);}}catch(e){}}" + "\n"
+            + "function run(){try{var t=edge(2),b=edge(innerHeight-3);if(!t||!b)return;var k=t+'|'+b;if(k!==last){last=k;AndroidDl.bars(t,b);}}catch(e){}}" + "\n"
             + "function sched(){if(tm)return;tm=setTimeout(function(){tm=null;run();},400);}" + "\n"
             + "run();setTimeout(run,1200);" + "\n"
             + "try{new MutationObserver(sched).observe(document.documentElement,{attributes:true,attributeFilter:['class','style','data-theme','data-mode']});}catch(e){}" + "\n"
@@ -150,7 +150,7 @@ public class MainActivity extends Activity {
         root.addView(web, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(root);
-        android.content.SharedPreferences bp = getSharedPreferences("bars", MODE_PRIVATE);
+        android.content.SharedPreferences bp = getSharedPreferences("bars2", MODE_PRIVATE);
         if (bp.contains("top")) applyBars(bp.getInt("top", 0), bp.getInt("bottom", 0));
 
         setup(web);
@@ -455,7 +455,11 @@ public class MainActivity extends Activity {
                 if (url != null && url.startsWith("http")) errorUrl = null;
                 v.evaluateJavascript(HOOK, null);
                 v.evaluateJavascript(CLEAN, null);
-                if (v == web) v.evaluateJavascript(BARS, null);
+                if (v == web) {
+                    v.evaluateJavascript(BARS, null);
+                    scheduleBarRefresh(600);
+                    scheduleBarRefresh(1800);
+                }
             }
 
             @Override
@@ -537,9 +541,28 @@ public class MainActivity extends Activity {
                 if (filePathCallback != null) filePathCallback.onReceiveValue(null);
                 filePathCallback = cb;
                 try {
-                    Intent fi = p.createIntent();
-                    fi.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true); // chon nhieu tep mot lan
-                    startActivityForResult(fi, FILE_REQ);
+                    // Trinh chon tep he thong (DocumentsUI): giu lau de chon nhieu tep mot lan.
+                    Intent fi = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    fi.addCategory(Intent.CATEGORY_OPENABLE);
+                    fi.setType("*/*");
+                    String[] acc = p.getAcceptTypes();
+                    ArrayList<String> mt = new ArrayList<>();
+                    boolean filterOk = acc != null && acc.length > 0;
+                    if (filterOk) {
+                        for (String t : acc) {
+                            if (t == null || t.trim().isEmpty()) continue;
+                            if (t.contains("/")) mt.add(t.trim()); else filterOk = false;
+                        }
+                    }
+                    if (filterOk && !mt.isEmpty()) fi.putExtra(Intent.EXTRA_MIME_TYPES, mt.toArray(new String[0]));
+                    fi.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                    try {
+                        startActivityForResult(fi, FILE_REQ);
+                    } catch (Exception e1) {
+                        Intent g = p.createIntent();
+                        g.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                        startActivityForResult(g, FILE_REQ);
+                    }
                 } catch (Exception e) {
                     filePathCallback = null;
                     return false;
@@ -640,6 +663,40 @@ public class MainActivity extends Activity {
         return "application/octet-stream";
     }
 
+    private int jsTop, jsBottom, lastTop = 0, lastBottom = 0;
+    private boolean jsHave = false;
+
+    private final Runnable barRefresh = this::refreshBars;
+
+    private void scheduleBarRefresh(long delay) {
+        if (root != null) root.postDelayed(barRefresh, delay);
+    }
+
+    // Do mau that tren man hinh (khong dua vao CSS): lay diem anh sat mep tren va mep duoi cua WebView.
+    private void refreshBars() {
+        if (web == null || web.getWidth() <= 0 || web.getHeight() <= 0 || web.getProgress() < 100) return;
+        int top = 0, bottom = 0;
+        boolean ok = false;
+        try {
+            int sw = 64;
+            float sc = sw / (float) web.getWidth();
+            int sh = Math.max(4, Math.round(web.getHeight() * sc));
+            android.graphics.Bitmap bmp = android.graphics.Bitmap.createBitmap(sw, sh, android.graphics.Bitmap.Config.ARGB_8888);
+            android.graphics.Canvas c = new android.graphics.Canvas(bmp);
+            c.scale(sc, sc);
+            web.draw(c);
+            int pt = bmp.getPixel(0, 0), pb = bmp.getPixel(0, sh - 1);
+            bmp.recycle();
+            if ((pt >>> 24) >= 200 && (pb >>> 24) >= 200) {
+                top = 0xFF000000 | (pt & 0xFFFFFF);
+                bottom = 0xFF000000 | (pb & 0xFFFFFF);
+                ok = true;
+            }
+        } catch (Throwable ignored) { }
+        if (!ok && jsHave) { top = jsTop; bottom = jsBottom; ok = true; }
+        if (ok && (top != lastTop || bottom != lastBottom)) applyBars(top, bottom);
+    }
+
     // ---------- Mau thanh trang thai / dieu huong theo nen trang ----------
     private static int parseCssColor(String css) {
         try {
@@ -667,6 +724,9 @@ public class MainActivity extends Activity {
             wd.setNavigationBarColor(bottom);
             root.setBackgroundColor(top);
             web.setBackgroundColor(top);
+            wd.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(top));
+            lastTop = top;
+            lastBottom = bottom;
             boolean lt = isLightColor(top), lb = isLightColor(bottom);
             if (Build.VERSION.SDK_INT >= 30) {
                 android.view.WindowInsetsController c = wd.getInsetsController();
@@ -682,7 +742,7 @@ public class MainActivity extends Activity {
                 if (Build.VERSION.SDK_INT >= 26) f = lb ? (f | 0x10) : (f & ~0x10);
                 wd.getDecorView().setSystemUiVisibility(f);
             }
-            getSharedPreferences("bars", MODE_PRIVATE).edit().putInt("top", top).putInt("bottom", bottom).apply();
+            getSharedPreferences("bars2", MODE_PRIVATE).edit().putInt("top", top).putInt("bottom", bottom).apply();
         });
     }
 
@@ -1007,7 +1067,10 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void bars(String top, String bottom) {
-            applyBars(parseCssColor(top), parseCssColor(bottom));
+            jsTop = parseCssColor(top);
+            jsBottom = parseCssColor(bottom);
+            jsHave = true;
+            scheduleBarRefresh(350);
         }
 
         @JavascriptInterface
@@ -1115,9 +1178,18 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
-        if (req == FILE_REQ && filePathCallback != null) {
-            filePathCallback.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(res, data));
-            filePathCallback = null;
+        if (req == FILE_REQ) {
+            Uri[] r = WebChromeClient.FileChooserParams.parseResult(res, data);
+            if (filePathCallback != null) {
+                filePathCallback.onReceiveValue(r);
+                filePathCallback = null;
+            } else if (r != null && r.length > 0) {
+                // Ung dung bi he thong dong luc dang chon tep: giu lai de them khi bam nut dinh kem.
+                pendingUris = new ArrayList<>();
+                for (Uri u : r) pendingUris.add(u);
+                root.postDelayed(() -> pendingUris = null, 120000);
+                toast("Bấm nút đính kèm để thêm " + r.length + " tệp đã chọn");
+            }
         }
         super.onActivityResult(req, res, data);
     }
@@ -1157,6 +1229,7 @@ public class MainActivity extends Activity {
         releaseInputFocus();
         resumed = true;
         showInstallDialog();
+        scheduleBarRefresh(300);
     }
 
     @Override
