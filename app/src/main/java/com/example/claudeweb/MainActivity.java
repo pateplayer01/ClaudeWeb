@@ -20,6 +20,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Message;
 import android.provider.MediaStore;
+import android.provider.Settings;
 import android.util.Base64;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -364,8 +365,10 @@ public class MainActivity extends Activity {
             req.setTitle(BuildConfig.APK_NAME);
             req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
             req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, BuildConfig.APK_NAME);
-            ((DownloadManager) getSystemService(DOWNLOAD_SERVICE)).enqueue(req);
-            toast("Đang tải bản mới, bấm vào thông báo để cài");
+            ensureDmReceiver();
+            long id = ((DownloadManager) getSystemService(DOWNLOAD_SERVICE)).enqueue(req);
+            dmJobs.put(id, new String[]{url, null, null, BuildConfig.APK_NAME, "application/vnd.android.package-archive"});
+            toast("Đang tải bản mới...");
         } catch (Exception e) {
             toast("Tải xuống thất bại");
         }
@@ -576,6 +579,53 @@ public class MainActivity extends Activity {
         return "application/octet-stream";
     }
 
+    // ---------- Cai APK sau khi tai xong ----------
+    private boolean resumed = false;
+    private Uri pendingInstallUri = null;
+    private String pendingInstallName = null;
+
+    private void promptInstall(final Uri uri, final String name) {
+        if (uri == null) return;
+        runOnUiThread(() -> {
+            pendingInstallUri = uri;
+            pendingInstallName = name;
+            if (resumed) showInstallDialog();
+        });
+    }
+
+    private void showInstallDialog() {
+        if (pendingInstallUri == null) return;
+        final Uri uri = pendingInstallUri;
+        final String name = pendingInstallName;
+        pendingInstallUri = null;
+        new AlertDialog.Builder(this)
+                .setTitle("Đã tải xong")
+                .setMessage(name)
+                .setPositiveButton("Cài đặt", (d, w) -> installApk(uri, name))
+                .setNegativeButton("Đóng", null)
+                .show();
+    }
+
+    private void installApk(Uri uri, String name) {
+        try {
+            if (Build.VERSION.SDK_INT >= 26 && !getPackageManager().canRequestPackageInstalls()) {
+                // Can cap quyen "cai ung dung khong ro nguon"; quay lai se hien lai hop cai dat.
+                pendingInstallUri = uri;
+                pendingInstallName = name;
+                toast("Bật \"Cho phép từ nguồn này\" rồi quay lại");
+                startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:" + getPackageName())));
+                return;
+            }
+            Intent i = new Intent(Intent.ACTION_VIEW);
+            i.setDataAndType(uri, "application/vnd.android.package-archive");
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+        } catch (Exception e) {
+            toast("Không mở được trình cài đặt. Mở tệp trong thư mục Downloads.");
+        }
+    }
+
     private class Sink {
         OutputStream os;
         Uri uri;
@@ -642,6 +692,9 @@ public class MainActivity extends Activity {
                 }
                 if (status == DownloadManager.STATUS_SUCCESSFUL) {
                     toast("Đã tải: " + job[3]);
+                    if (job[3].toLowerCase().endsWith(".apk")) {
+                        promptInstall(dm.getUriForDownloadedFile(id), job[3]);
+                    }
                 } else {
                     toast("Tải lỗi (mã " + reason + "), thử cách khác...");
                     streamDownload(job[0], job[1], job[2], job[3], job[4]);
@@ -694,6 +747,7 @@ public class MainActivity extends Activity {
                 in.close();
                 sink.finish();
                 toast("Đã lưu vào Downloads: " + name);
+                if (name.toLowerCase().endsWith(".apk")) promptInstall(sink.uri, name);
             } catch (Exception e) {
                 if (sink != null) sink.abort();
                 toast("Tải thất bại");
@@ -865,6 +919,7 @@ public class MainActivity extends Activity {
             try {
                 blobSink.finish();
                 toast("Đã lưu vào Downloads: " + blobName);
+                if (blobName.toLowerCase().endsWith(".apk")) promptInstall(blobSink.uri, blobName);
                 if (popup != null) root.post(MainActivity.this::closePopup);
             } catch (Exception e) {
                 blobSink.abort();
@@ -888,6 +943,7 @@ public class MainActivity extends Activity {
                 sk.os.write(bytes);
                 sk.finish();
                 toast("Đã lưu vào Downloads: " + name);
+                if (name.toLowerCase().endsWith(".apk")) promptInstall(sk.uri, name);
             } catch (Exception e) {
                 toast("Lưu tệp thất bại");
             }
@@ -932,6 +988,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
+        resumed = false;
         CookieManager.getInstance().flush();
         releaseInputFocus();
         web.onPause();
@@ -943,6 +1000,8 @@ public class MainActivity extends Activity {
         super.onResume();
         web.onResume();
         releaseInputFocus();
+        resumed = true;
+        showInstallDialog();
     }
 
     @Override
