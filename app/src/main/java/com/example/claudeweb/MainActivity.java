@@ -264,8 +264,10 @@ public class MainActivity extends Activity {
         PopupMenu m = new PopupMenu(this, anchor);
         m.getMenu().add(0, 1, 0, "Tải lại trang");
         m.getMenu().add(0, 2, 1, "Kiểm tra cập nhật");
+        m.getMenu().add(0, 3, 2, "Xóa cache");
         m.setOnMenuItemClickListener(item -> {
             if (item.getItemId() == 1) reloadPage();
+            else if (item.getItemId() == 3) clearAppCache();
             else checkUpdate();
             return true;
         });
@@ -577,6 +579,49 @@ public class MainActivity extends Activity {
         if (t != null) return t;
         if (extOf(name).equals("apk")) return "application/vnd.android.package-archive";
         return "application/octet-stream";
+    }
+
+    // ---------- Xoa cache (giu dang nhap: khong dong vao cookie/localStorage) ----------
+    private File[] cacheDirs() {
+        File d = getDataDir();
+        return new File[]{getCacheDir(), getExternalCacheDir(),
+                new File(d, "app_webview/Default/HTTP Cache"),
+                new File(d, "app_webview/Default/Code Cache"),
+                new File(d, "app_webview/Default/GPUCache")};
+    }
+
+    private static long dirSize(File f) {
+        if (f == null || !f.exists()) return 0;
+        if (f.isFile()) return f.length();
+        long n = 0;
+        File[] k = f.listFiles();
+        if (k != null) for (File c : k) n += dirSize(c);
+        return n;
+    }
+
+    private static void deleteChildren(File f) {
+        if (f == null) return;
+        File[] k = f.listFiles();
+        if (k == null) return;
+        for (File c : k) {
+            if (c.isDirectory()) deleteChildren(c);
+            c.delete();
+        }
+    }
+
+    private void clearAppCache() {
+        toast("Đang xóa cache...");
+        final long[] before = {0};
+        new Thread(() -> {
+            for (File d : cacheDirs()) before[0] += dirSize(d);
+            runOnUiThread(() -> web.clearCache(true));
+            for (File d : new File[]{getCacheDir(), getExternalCacheDir()}) deleteChildren(d);
+            try { Thread.sleep(1500); } catch (InterruptedException ignored) { }
+            long after = 0;
+            for (File d : cacheDirs()) after += dirSize(d);
+            long freed = Math.max(0, before[0] - after);
+            toast(String.format(java.util.Locale.US, "Đã xóa cache: %.1f MB", freed / 1048576.0));
+        }).start();
     }
 
     // ---------- Cai APK sau khi tai xong ----------
