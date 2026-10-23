@@ -112,6 +112,18 @@ public class MainActivity extends Activity {
             + "try{new MutationObserver(sched).observe(document.documentElement,{childList:true,subtree:true});}catch(e){}"
             + "})();";
 
+    private static final String BARS = "(function(){if(window.__bgObs)return;window.__bgObs=1;" + "\n"
+            + "function bg(el){while(el){var c=getComputedStyle(el).backgroundColor;var m=c.match(/[\\d.]+/g);if(m&&(m.length<4||parseFloat(m[3])>0.5))return c;el=el.parentElement;}return 'rgb(255,255,255)';}" + "\n"
+            + "function at(y){var e=document.elementFromPoint(innerWidth/2,y);return bg(e||document.body);}" + "\n"
+            + "var tm=null,last='';" + "\n"
+            + "function run(){try{var t=at(2),b=at(innerHeight-2),k=t+'|'+b;if(k!==last){last=k;AndroidDl.bars(t,b);}}catch(e){}}" + "\n"
+            + "function sched(){if(tm)return;tm=setTimeout(function(){tm=null;run();},400);}" + "\n"
+            + "run();setTimeout(run,1200);" + "\n"
+            + "try{new MutationObserver(sched).observe(document.documentElement,{attributes:true,attributeFilter:['class','style','data-theme','data-mode']});}catch(e){}" + "\n"
+            + "try{matchMedia('(prefers-color-scheme: dark)').addEventListener('change',sched);}catch(e){}" + "\n"
+            + "document.addEventListener('visibilitychange',sched);" + "\n"
+            + "})();";
+
     private FrameLayout root;
     private WebView web;
     private WebView popup;
@@ -134,6 +146,8 @@ public class MainActivity extends Activity {
         root.addView(web, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(root);
+        android.content.SharedPreferences bp = getSharedPreferences("bars", MODE_PRIVATE);
+        if (bp.contains("top")) applyBars(bp.getInt("top", 0), bp.getInt("bottom", 0));
 
         setup(web);
         addMenuButton();
@@ -437,6 +451,7 @@ public class MainActivity extends Activity {
                 if (url != null && url.startsWith("http")) errorUrl = null;
                 v.evaluateJavascript(HOOK, null);
                 v.evaluateJavascript(CLEAN, null);
+                if (v == web) v.evaluateJavascript(BARS, null);
             }
 
             @Override
@@ -617,6 +632,52 @@ public class MainActivity extends Activity {
         if (t != null) return t;
         if (extOf(name).equals("apk")) return "application/vnd.android.package-archive";
         return "application/octet-stream";
+    }
+
+    // ---------- Mau thanh trang thai / dieu huong theo nen trang ----------
+    private static int parseCssColor(String css) {
+        try {
+            Matcher m = Pattern.compile("[\\d.]+").matcher(css);
+            int[] v = new int[3];
+            for (int i = 0; i < 3; i++) {
+                if (!m.find()) return 0xFF000000;
+                v[i] = Math.round(Float.parseFloat(m.group()));
+            }
+            return 0xFF000000 | (v[0] << 16) | (v[1] << 8) | v[2];
+        } catch (Exception e) {
+            return 0xFF000000;
+        }
+    }
+
+    private static boolean isLightColor(int c) {
+        double l = (0.299 * ((c >> 16) & 255) + 0.587 * ((c >> 8) & 255) + 0.114 * (c & 255)) / 255.0;
+        return l > 0.5;
+    }
+
+    private void applyBars(final int top, final int bottom) {
+        runOnUiThread(() -> {
+            android.view.Window wd = getWindow();
+            wd.setStatusBarColor(top);
+            wd.setNavigationBarColor(bottom);
+            root.setBackgroundColor(top);
+            web.setBackgroundColor(top);
+            boolean lt = isLightColor(top), lb = isLightColor(bottom);
+            if (Build.VERSION.SDK_INT >= 30) {
+                android.view.WindowInsetsController c = wd.getInsetsController();
+                if (c != null) {
+                    c.setSystemBarsAppearance(lt ? android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS : 0,
+                            android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS);
+                    c.setSystemBarsAppearance(lb ? android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS : 0,
+                            android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS);
+                }
+            } else {
+                int f = wd.getDecorView().getSystemUiVisibility();
+                f = lt ? (f | 0x2000) : (f & ~0x2000);
+                if (Build.VERSION.SDK_INT >= 26) f = lb ? (f | 0x10) : (f & ~0x10);
+                wd.getDecorView().setSystemUiVisibility(f);
+            }
+            getSharedPreferences("bars", MODE_PRIVATE).edit().putInt("top", top).putInt("bottom", bottom).apply();
+        });
     }
 
     // ---------- Xoa cache (giu dang nhap: khong dong vao cookie/localStorage) ----------
@@ -937,6 +998,11 @@ public class MainActivity extends Activity {
     private class DlBridge {
         private Sink blobSink;
         private String blobName;
+
+        @JavascriptInterface
+        public void bars(String top, String bottom) {
+            applyBars(parseCssColor(top), parseCssColor(bottom));
+        }
 
         @JavascriptInterface
         public void fail() {
