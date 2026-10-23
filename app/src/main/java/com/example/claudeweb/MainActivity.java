@@ -76,6 +76,42 @@ public class MainActivity extends Activity {
             + "document.addEventListener('click',function(e){var a=e.target&&e.target.closest?e.target.closest('a[download]'):null;"
             + "if(a)window.__lastName=a.getAttribute('download');},true);})();";
 
+    // Nen OLED den + an cum nut thua (Nang cap cua Claude, the ket noi MXH cua GLM).
+    private static final String CLEAN = ""
+            + "(function(){if(window.__clean)return;window.__clean=1;"
+            + "var BASE=null;"
+            + "function parts(c){var a=c.indexOf('('),b=c.indexOf(')');return c.slice(a+1,b).split(',');}"
+            + "function lum(c){var m=parts(c);if(m.length<3)return -1;if(m.length>3&&parseFloat(m[3])===0)return -1;return (0.2126*parseFloat(m[0])+0.7152*parseFloat(m[1])+0.0722*parseFloat(m[2]))/255;}"
+            + "function baseColor(){if(!document.body)return null;var c=getComputedStyle(document.body).backgroundColor;if(lum(c)<0)c=getComputedStyle(document.documentElement).backgroundColor;return lum(c)<0?null:c;}"
+            + "function oled(){"
+            + " if(BASE==='skip')return;"
+            + " if(!BASE){var c=baseColor();if(!c)return;var l=lum(c);if(l>=0.25||l===0){BASE='skip';return;}BASE=c;"
+            + "  var st=document.createElement('style');st.textContent='html,body{background-color:#000!important}';(document.head||document.documentElement).appendChild(st);}"
+            + " var q=[[document.body,0]],n=0;"
+            + " while(q.length&&n<300){var e=q.shift(),el=e[0];n++;"
+            + "  if(getComputedStyle(el).backgroundColor===BASE&&el.getBoundingClientRect().width>=innerWidth*0.4)el.style.setProperty('background-color','#000','important');"
+            + "  if(e[1]<6)for(var i=0;i<el.children.length;i++)q.push([el.children[i],e[1]+1]);}"
+            + "}"
+            + "function hide(el){if(el&&el.style.display!=='none')el.style.setProperty('display','none','important');}"
+            + "var PLAT=/Discord|Lark|WeChat|Telegram|WhatsApp|Slack/;"
+            + "function cards(){"
+            + " var it=document.querySelectorAll('a,button');"
+            + " for(var i=0;i<it.length;i++){var b=it[i],t=(b.textContent||'').trim(),p=b;"
+            + "  if(t==='Nâng cấp'||t==='Upgrade'){"
+            + "   while(p.parentElement&&p.parentElement!==document.body&&p.parentElement.textContent.trim().length<=28&&p.parentElement.children.length<=3&&!p.parentElement.querySelector('input,textarea,[contenteditable]'))p=p.parentElement;"
+            + "   hide(p);"
+            + "  }else if(t==='Connect'||t==='Coming soon'){"
+            + "   var k=0;while(p.parentElement&&!PLAT.test(p.textContent)&&k++<8)p=p.parentElement;"
+            + "   if(PLAT.test(p.textContent)&&p.textContent.length<250)hide(p);"
+            + "  }}"
+            + "}"
+            + "function run(){try{oled();cards();}catch(e){}}"
+            + "var tm=null;"
+            + "function sched(){if(tm)return;tm=setTimeout(function(){tm=null;run();},900);}"
+            + "run();"
+            + "try{new MutationObserver(sched).observe(document.documentElement,{childList:true,subtree:true});}catch(e){}"
+            + "})();";
+
     private FrameLayout root;
     private WebView web;
     private WebView popup;
@@ -400,11 +436,13 @@ public class MainActivity extends Activity {
             public void onPageStarted(WebView v, String url, Bitmap icon) {
                 if (url != null && url.startsWith("http")) errorUrl = null;
                 v.evaluateJavascript(HOOK, null);
+                v.evaluateJavascript(CLEAN, null);
             }
 
             @Override
             public void onPageFinished(WebView v, String url) {
                 v.evaluateJavascript(HOOK, null);
+                v.evaluateJavascript(CLEAN, null);
                 if (v == web && url != null && url.startsWith("http") && restoredFromKill) {
                     restoredFromKill = false;
                     web.postDelayed(() -> cleanStaleDraft(0), 1500);
